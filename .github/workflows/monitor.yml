@@ -2,9 +2,9 @@ name: Akropolis Ticket Monitor
 
 on:
   schedule:
-    - cron: '0 7 * * *'
-    - cron: '0 10 * * *'
-    - cron: '0 13 * * *'
+    - cron: '0 7 * * *'    # 09:00 oesterreichische Zeit (UTC+2)
+    - cron: '0 10 * * *'   # 12:00 oesterreichische Zeit
+    - cron: '0 13 * * *'   # 15:00 oesterreichische Zeit
   workflow_dispatch:
 
 env:
@@ -13,7 +13,7 @@ env:
 jobs:
   check-tickets:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Repository auschecken
@@ -25,11 +25,13 @@ jobs:
           python-version: '3.11'
 
       - name: Abhaengigkeiten installieren
-        run: pip install anthropic
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
 
-      - name: Ticket-Verfuegbarkeit pruefen
+      - name: Ticket-Verfuegbarkeit pruefen & E-Mail senden
         env:
-          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_SENDER:        ${{ secrets.GMAIL_SENDER }}
           GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python monitor.py
