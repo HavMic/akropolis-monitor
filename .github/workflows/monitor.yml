@@ -2,20 +2,17 @@ name: Akropolis Ticket Monitor
 
 on:
   schedule:
-    # Zeiten in UTC — Österreich im Sommer = UTC+2 (CEST)
-    - cron: '0 7 * * *'   # 09:00 österreichische Zeit
-    - cron: '0 10 * * *'  # 12:00 österreichische Zeit
-    - cron: '0 13 * * *'  # 15:00 österreichische Zeit
-
-  workflow_dispatch:  # Manuell startbar via GitHub UI
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Node.js 24 (kein Deprecation-Warning)
+    - cron: '0 7 * * *'
+    - cron: '0 10 * * *'
+    - cron: '0 13 * * *'
+  workflow_dispatch:
 
 jobs:
   check-tickets:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Repository auschecken
@@ -26,10 +23,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Abhängigkeiten installieren
+      - name: Abhaengigkeiten installieren
         run: pip install anthropic
 
-      - name: Ticket-Verfügbarkeit prüfen & E-Mail senden
+      - name: Ticket-Verfuegbarkeit pruefen
         env:
           ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_SENDER:        ${{ secrets.GMAIL_SENDER }}
