@@ -11,11 +11,97 @@ ADULTS              = 2
 CHILDREN            = 3
 ALERT_EMAIL         = "havas.michael@gmail.com"
 BOOKING_URL         = "https://hhticket.gr/tap_b2c_new/english/tap.exe?PM=P1P&place=000000002"
+NOT_AVAILABLE_TEXT  = "not available for this specific selection"
 # ──────────────────────────────────────────────────────────────
 
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def click_day_1(page) -> bool:
+    """Klickt exakt auf Tag 1 im Kalender — nicht 11, 21, 31."""
+    result = page.evaluate("""
+        () => {
+            const cells = document.querySelectorAll('td, [class*="day"], [class*="calendar"] span');
+            for (const cell of cells) {
+                const txt = (cell.textContent || '').trim();
+                const cls = (cell.className || '').toLowerCase();
+                // Exakt "1" — keine anderen Zahlen die 1 enthalten
+                if (txt === '1' && !cls.includes('disabled') && !cls.includes('prev')
+                    && !cls.includes('other') && !cls.includes('grayed')) {
+                    cell.click();
+                    return 'geklickt: ' + cell.tagName + ' class=' + cell.className;
+                }
+            }
+            return null;
+        }
+    """)
+    if result:
+        log(f"Tag 1 per JS geklickt: {result}")
+        return True
+    log("JS-Klick fehlgeschlagen — versuche Playwright-Locator ...")
+    # Playwright-Fallback: aria-label mit Datum
+    for label in ["April 1", "1 April", "April 1, 2026", "1. April"]:
+        try:
+            el = page.locator(f"[aria-label*='{label}']").first
+            if el.is_visible(timeout=1000):
+                el.click()
+                log(f"Tag 1 per aria-label '{label}' geklickt.")
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def page_has_not_available(page) -> bool:
+    """4 Methoden um den 'not available'-Popup zu erkennen."""
+    # Methode 1: HTML-Quellcode (absolut zuverlässig)
+    try:
+        html = page.content()
+        if NOT_AVAILABLE_TEXT in html.lower():
+            log("Erkannt via HTML-Quellcode.")
+            return True
+    except Exception as e:
+        log(f"HTML-Check Fehler: {e}")
+
+    # Methode 2: JavaScript alle DOM-Texte
+    try:
+        found = page.evaluate(f"""
+            () => {{
+                const needle = '{NOT_AVAILABLE_TEXT}';
+                return document.body.innerHTML.toLowerCase().includes(needle);
+            }}
+        """)
+        if found:
+            log("Erkannt via JS innerHTML.")
+            return True
+    except Exception as e:
+        log(f"JS-Check Fehler: {e}")
+
+    # Methode 3: role=dialog
+    try:
+        if page.locator("[role='dialog']").is_visible(timeout=1000):
+            txt = page.locator("[role='dialog']").inner_text(timeout=2000).lower()
+            if "not available" in txt or "unavailable" in txt:
+                log(f"Erkannt via role=dialog: '{txt[:100]}'")
+                return True
+    except Exception:
+        pass
+
+    # Methode 4: Sichtbare Modals
+    for sel in ["[class*='modal']", "[class*='popup']", "[class*='alert']", "[class*='warning']"]:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=500):
+                txt = el.inner_text(timeout=1000).lower()
+                if "not available" in txt or "unavailable" in txt or "service" in txt:
+                    log(f"Erkannt via '{sel}': '{txt[:100]}'")
+                    return True
+        except Exception:
+            pass
+
+    return False
 
 
 def check_availability() -> dict:
@@ -25,180 +111,102 @@ def check_availability() -> dict:
         page = browser.new_page(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
-
         try:
-            # Schritt 1: Seite laden
+            # ── 1. Seite laden ──────────────────────────────────────
             log(f"Oeffne: {BOOKING_URL}")
             page.goto(BOOKING_URL, timeout=30000, wait_until="networkidle")
 
-            # Schritt 2: "Buy your ticket" klicken
+            # ── 2. "Buy your ticket" klicken ───────────────────────
+            log("Klicke 'Buy your ticket' ...")
             page.click("text=Buy your ticket", timeout=10000)
             page.wait_for_timeout(2000)
 
-            # Schritt 3: Zu April 2026 navigieren
+            # ── 3. Zu April 2026 navigieren ────────────────────────
             log("Navigiere zu April 2026 ...")
             for _ in range(24):
                 try:
                     if page.locator("text=April 2026").is_visible(timeout=1500):
-                        log("April 2026 gefunden.")
+                        log("April 2026 sichtbar.")
                         break
                 except Exception:
                     pass
-                try:
-                    page.locator("button.next, .next-month, [aria-label*='next' i]").first.click(timeout=2000)
-                    page.wait_for_timeout(600)
-                except Exception:
+                for btn_sel in [
+                    "button.next", ".next-month",
+                    "[aria-label*='next' i]", "[aria-label*='Next' i]",
+                    "button:has-text('›')", "button:has-text('>')",
+                ]:
                     try:
-                        page.locator("button:has-text('›'), button:has-text('>')").first.click(timeout=2000)
+                        page.locator(btn_sel).first.click(timeout=1500)
                         page.wait_for_timeout(600)
-                    except Exception:
                         break
-
-            # Schritt 4: Tag 1 klicken
-            log("Klicke Tag 1 ...")
-            clicked = False
-            for td in page.locator("td").all():
-                try:
-                    txt = td.inner_text(timeout=500).strip()
-                    cls = td.get_attribute("class") or ""
-                    if txt == "1" and "disabled" not in cls and "prev" not in cls and "next" not in cls:
-                        td.click(timeout=3000)
-                        log(f"Tag 1 geklickt (class='{cls}')")
-                        clicked = True
-                        break
-                except Exception:
-                    pass
-            if not clicked:
-                log("Fallback: Klicke erstes td mit '1'")
-                page.locator("td").filter(has_text="1").first.click(timeout=5000)
-
-            # Schritt 5: Warten — entweder Popup ODER Zeitslots erscheinen
-            log("Warte auf Modal oder Zeitslots (max 8 Sekunden) ...")
-
-            # Warte auf eines von beiden
-            modal_selector = "div[role='dialog'], .modal, [class*='modal'], [class*='popup'], [class*='alert'], [class*='warning']"
-            slot_selector  = "li:has-text('8:00'), li:has-text('08:00'), [class*='slot']:has-text('8:00')"
-
-            modal_appeared = False
-            slots_appeared = False
-
-            try:
-                page.wait_for_selector(
-                    f"{modal_selector}, {slot_selector}",
-                    timeout=8000
-                )
-                log("Element erschienen — pruefe was es ist ...")
-            except PlaywrightTimeout:
-                log("Timeout — weder Modal noch Slots erschienen.")
-
-            # Schritt 6: Popup/Modal explizit pruefen
-            # Methode A: role='dialog'
-            try:
-                dialog = page.locator("div[role='dialog']")
-                if dialog.is_visible(timeout=2000):
-                    dialog_text = dialog.inner_text(timeout=3000).strip()
-                    log(f"Dialog gefunden (role=dialog): '{dialog_text[:200]}'")
-                    modal_appeared = True
-            except Exception:
-                pass
-
-            # Methode B: .modal oder aehnliche Klassen
-            if not modal_appeared:
-                for sel in [".modal", "[class*='modal']", "[class*='popup']", "[class*='Popup']", "[class*='alert']", "[class*='Alert']", "[class*='warning']", "[class*='Warning']"]:
-                    try:
-                        el = page.locator(sel).first
-                        if el.is_visible(timeout=1000):
-                            txt = el.inner_text(timeout=2000).strip()
-                            log(f"Modal '{sel}' gefunden: '{txt[:200]}'")
-                            if len(txt) > 5:
-                                modal_appeared = True
-                                break
                     except Exception:
                         pass
 
-            # Methode C: Pruefe ob "not available" IRGENDWO auf der Seite steht
-            # (auch in versteckten Elementen — evaluate direkt im DOM)
-            if not modal_appeared:
-                try:
-                    found = page.evaluate("""
-                        () => {
-                            const all = document.querySelectorAll('*');
-                            for (const el of all) {
-                                if (el.children.length === 0) {
-                                    const t = (el.textContent || '').toLowerCase();
-                                    if (t.includes('not available for this specific')) {
-                                        return el.textContent.trim();
-                                    }
-                                }
-                            }
-                            return null;
-                        }
-                    """)
-                    if found:
-                        log(f"JavaScript-Suche: Gefunden: '{found}'")
-                        modal_appeared = True
-                except Exception as e:
-                    log(f"JS-Evaluate Fehler: {e}")
+            # ── 4. Tag 1 klicken ────────────────────────────────────
+            log("Klicke Tag 1 (exakt) ...")
+            clicked = click_day_1(page)
+            if not clicked:
+                log("WARNUNG: Tag 1 konnte nicht geklickt werden!")
 
-            # Methode D: Vollstaendiger HTML-Dump — absolut zuverlaessig
-            if not modal_appeared:
-                try:
-                    html = page.content()
-                    if "not available for this specific selection" in html.lower():
-                        log("HTML-Dump: 'not available for this specific selection' gefunden!")
-                        modal_appeared = True
-                    else:
-                        log("HTML-Dump: Kein 'not available'-Text im HTML.")
-                        # Zeige relevante HTML-Teile fuer Debugging
-                        import re
-                        matches = re.findall(r'.{0,100}available.{0,100}', html, re.IGNORECASE)
-                        for m in matches[:5]:
-                            log(f"  HTML-Kontext: {m}")
-                except Exception as e:
-                    log(f"HTML-Dump Fehler: {e}")
+            # ── 5. Warten & Popup prüfen ────────────────────────────
+            log("Warte 5 Sekunden auf Popup ...")
+            page.wait_for_timeout(5000)
 
-            page.screenshot(path="/tmp/akropolis_screenshot.png")
+            page.screenshot(path="/tmp/akropolis_after_click.png")
+            log("Screenshot gespeichert.")
 
-            if modal_appeared:
+            if page_has_not_available(page):
                 browser.close()
                 return {
                     "available": False,
-                    "reason": "Datum noch nicht buchbar (Website: 'not available for this specific selection').",
-                    "url": BOOKING_URL
+                    "reason": "Datum noch nicht freigegeben (Website: 'not available for this specific selection').",
+                    "url": BOOKING_URL,
                 }
 
-            # Schritt 7: Keine Fehlermeldung — Zeitslots pruefen
-            log("Kein Fehler-Modal. Pruefe Zeitslots ...")
+            log("Kein Fehler-Modal erkannt.")
+
+            # ── 6. Continue & Zeitslots prüfen ──────────────────────
             try:
                 page.click("text=Continue", timeout=5000)
                 page.wait_for_timeout(3000)
             except Exception:
-                pass
+                log("Kein 'Continue'-Button.")
 
+            # Nochmals pruefen
+            if page_has_not_available(page):
+                browser.close()
+                return {
+                    "available": False,
+                    "reason": "Nach Continue: Datum noch nicht buchbar.",
+                    "url": BOOKING_URL,
+                }
+
+            # Zeitslots lesen
             slot_available = False
             slot_found     = False
             for el in page.locator("li, [class*='slot'], [class*='time']").all():
                 try:
                     txt = el.inner_text(timeout=500).strip()
-                    cls = el.get_attribute("class") or ""
+                    cls = (el.get_attribute("class") or "").lower()
                     if "8:00" in txt or "08:00" in txt:
                         slot_found = True
-                        disabled   = any(w in cls.lower() for w in ["disabled", "sold", "unavail", "full"])
-                        log(f"8:00-Slot: '{txt}' | disabled={disabled}")
+                        disabled   = any(w in cls for w in ["disabled","sold","unavail","full"])
+                        log(f"8:00-Slot: '{txt}' disabled={disabled}")
                         if not disabled:
                             slot_available = True
                         break
                 except Exception:
                     pass
 
+            page.screenshot(path="/tmp/akropolis_slots.png")
             browser.close()
 
             if slot_available:
                 return {"available": True,  "reason": "Zeitslot 8:00 Uhr am 1. April 2026 ist BUCHBAR!", "url": BOOKING_URL}
             elif slot_found:
-                return {"available": False, "reason": "Zeitslot 8:00 Uhr ausgebucht.",                   "url": BOOKING_URL}
+                return {"available": False, "reason": "Zeitslot 8:00 Uhr ist ausgebucht.",               "url": BOOKING_URL}
             else:
-                return {"available": False, "reason": "Datum noch nicht buchbar (keine Slots gefunden).", "url": BOOKING_URL}
+                return {"available": False, "reason": "Datum noch nicht im Buchungssystem verfuegbar.",   "url": BOOKING_URL}
 
         except Exception as e:
             log(f"Fehler: {e}")
@@ -206,7 +214,7 @@ def check_availability() -> dict:
             try: page.screenshot(path="/tmp/akropolis_error.png")
             except Exception: pass
             browser.close()
-            return {"available": False, "reason": f"Fehler: {str(e)[:150]}", "url": BOOKING_URL}
+            return {"available": False, "reason": f"Fehler: {str(e)[:200]}", "url": BOOKING_URL}
 
 
 def send_email(subject: str, body: str):
@@ -228,14 +236,13 @@ def build_body(result: dict, available: bool) -> str:
     url = result.get("url") or BOOKING_URL
     if available:
         return (
-            f"ALARM: Akropolis-Tickets sind JETZT verfuegbar!\n\n"
+            f"ALARM: Akropolis-Tickets JETZT verfuegbar!\n\n"
             f"Datum:    {TARGET_DATE_DISPLAY}\n"
             f"Uhrzeit:  08:00 Uhr\n"
             f"Personen: {ADULTS} Erwachsene + {CHILDREN} Kinder\n\n"
             f">>> Jetzt sofort buchen: {url}\n\n"
-            f"Info: {result.get('reason', '')}\n\n"
-            f"Nicht zu lange warten - Tickets werden schnell ausgebucht!\n\n"
-            f"Geprueft: {now}"
+            f"Info: {result.get('reason','')}\n\n"
+            f"Nicht zu lange warten!\n\nGeprueft: {now}"
         )
     else:
         return (
@@ -244,7 +251,7 @@ def build_body(result: dict, available: bool) -> str:
             f"Uhrzeit:  08:00 Uhr\n"
             f"Personen: {ADULTS} Erwachsene + {CHILDREN} Kinder\n\n"
             f"Status: NICHT verfuegbar\n"
-            f"Grund:  {result.get('reason', 'Keine Angabe')}\n\n"
+            f"Grund:  {result.get('reason','Keine Angabe')}\n\n"
             f"Buchungsseite: {BOOKING_URL}\n"
             f"Naechste Pruefungen: 09:00 / 12:00 / 15:00 Uhr\n\n"
             f"Geprueft: {now}"
@@ -260,7 +267,7 @@ def main():
 
     result    = check_availability()
     available = result.get("available", False)
-    log(f"Endergebnis: verfuegbar={available} | {result.get('reason', '-')}")
+    log(f"Endergebnis: verfuegbar={available} | {result.get('reason','-')}")
 
     subject = "Karten Akropolis JETZT" if available else "Keine Verfuegbarkeit"
     try:
