@@ -1,0 +1,38 @@
+name: Akropolis Ticket Monitor
+
+on:
+  schedule:
+    # Zeiten in UTC (Österreich = UTC+2 im Sommer / UTC+1 im Winter)
+    # 1. April = Sommerzeit (CEST = UTC+2)
+    # 09:00 CEST = 07:00 UTC
+    # 12:00 CEST = 10:00 UTC
+    # 15:00 CEST = 13:00 UTC
+    - cron: '0 7 * * *'   # 09:00 Uhr österreichische Zeit
+    - cron: '0 10 * * *'  # 12:00 Uhr österreichische Zeit
+    - cron: '0 13 * * *'  # 15:00 Uhr österreichische Zeit
+
+  workflow_dispatch:  # Auch manuell über GitHub UI startbar
+
+jobs:
+  check-tickets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Abhängigkeiten installieren
+        run: pip install anthropic
+
+      - name: Ticket-Verfügbarkeit prüfen & E-Mail senden
+        env:
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_SENDER:        ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python monitor.py
