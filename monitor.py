@@ -1,9 +1,7 @@
 import smtplib
 import os
 import sys
-import re
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -13,126 +11,51 @@ ADULTS              = 2
 CHILDREN            = 3
 ALERT_EMAIL         = "havas.michael@gmail.com"
 BOOKING_URL         = "https://hhticket.gr/tap_b2c_new/english/tap.exe?PM=P1P&place=000000002"
-NOT_AVAILABLE_TEXT  = "not available for this specific selection"
-DEBUG               = True   # Sendet HTML-Auszug in die E-Mail
 # ──────────────────────────────────────────────────────────────
-
 
 def log(msg: str):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
-def click_day_1(page) -> bool:
-    """Klickt exakt auf Tag 1 im Kalender via JavaScript."""
-    result = page.evaluate("""
-        () => {
-            const cells = document.querySelectorAll('td, [class*="day"], [class*="calendar"] span, button');
-            for (const cell of cells) {
-                const txt = (cell.textContent || '').trim();
-                const cls = (cell.className || '').toLowerCase();
-                if (txt === '1' && !cls.includes('disabled') && !cls.includes('prev')
-                    && !cls.includes('other') && !cls.includes('grayed')) {
-                    cell.click();
-                    return cell.tagName + '|' + cell.className;
-                }
-            }
-            return null;
-        }
-    """)
-    if result:
-        log(f"Tag 1 per JS geklickt: {result}")
-        return True
-    # Fallback: aria-label
-    for label in ["April 1", "1 April", "April 1, 2026"]:
-        try:
-            el = page.locator(f"[aria-label*='{label}']").first
-            if el.is_visible(timeout=1000):
-                el.click()
-                log(f"Tag 1 per aria-label '{label}' geklickt.")
-                return True
-        except Exception:
-            pass
-    return False
-
-
-def get_page_debug_info(page) -> dict:
-    """Sammelt alle nützlichen Debug-Infos von der Seite."""
-    info = {}
+def has_error_popup(page) -> bool:
+    """Prüft ob ein Fehler-Popup sichtbar ist."""
     try:
-        html = page.content()
-        info["html_length"] = len(html)
-        info["html_lower"]  = html.lower()
-        info["html_raw"]    = html
-
-        # Alle Textstücke rund um "available"
-        matches = re.findall(r'.{0,150}available.{0,150}', html, re.IGNORECASE)
-        info["available_contexts"] = matches
-
-        # Alle sichtbaren Texte
-        info["body_text"] = page.inner_text("body", timeout=5000)
-
+        # Direkt via innerText des gesamten gerenderten DOMs
+        visible_text = page.evaluate("() => document.body.innerText").lower()
+        if "not available for this specific selection" in visible_text:
+            log("Popup erkannt via document.body.innerText")
+            return True
+        if "specific selection" in visible_text:
+            log("Popup erkannt via 'specific selection'")
+            return True
     except Exception as e:
-        info["error"] = str(e)
-    return info
-
-
-def is_not_available(debug: dict) -> tuple:
-    """
-    Prüft auf JEDE erdenkliche Weise ob 'not available' vorkommt.
-    Gibt (True/False, Grund) zurück.
-    """
-    html_lower = debug.get("html_lower", "")
-    body_text  = debug.get("body_text",  "").lower()
-
-    checks = [
-        (NOT_AVAILABLE_TEXT,              html_lower, "HTML: exact phrase"),
-        ("not available",                 html_lower, "HTML: not available"),
-        ("not available",                 body_text,  "body_text: not available"),
-        ("service is not available",      html_lower, "HTML: service not available"),
-        ("ticketing service is not",      html_lower, "HTML: ticketing service"),
-        ("specific selection",            html_lower, "HTML: specific selection"),
-        ("ενημέρωση",                     html_lower, "HTML: greek popup title"),  # griechisch für "Benachrichtigung"
-        ("enimerósi",                     html_lower, "HTML: greek romanized"),
-    ]
-
-    for phrase, source, label in checks:
-        if phrase in source:
-            log(f"NOT_AVAILABLE erkannt via [{label}]: '{phrase}'")
-            return True, label
-
-    log("KEINE 'not available' Phrase gefunden.")
-    log(f"  body_text Auszug: {body_text[:300]}")
-    for ctx in debug.get("available_contexts", [])[:5]:
-        log(f"  HTML-Kontext: {ctx[:200]}")
-
-    return False, ""
+        log(f"innerText-Check Fehler: {e}")
+    return False
 
 
 def check_availability() -> dict:
     log("Starte Browser ...")
-    debug_html = ""
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
         try:
-            # 1. Seite laden
+            # ── 1. Seite laden ──────────────────────────────────────
             log(f"Oeffne: {BOOKING_URL}")
             page.goto(BOOKING_URL, timeout=30000, wait_until="networkidle")
 
-            # 2. "Buy your ticket"
+            # ── 2. "Buy your ticket" klicken ───────────────────────
             log("Klicke 'Buy your ticket' ...")
             page.click("text=Buy your ticket", timeout=10000)
             page.wait_for_timeout(2000)
 
-            # 3. Zu April 2026 navigieren
+            # ── 3. Zu April 2026 navigieren ────────────────────────
             log("Navigiere zu April 2026 ...")
             for _ in range(24):
                 try:
                     if page.locator("text=April 2026").is_visible(timeout=1500):
-                        log("April 2026 sichtbar.")
+                        log("April 2026 gefunden.")
                         break
                 except Exception:
                     pass
@@ -145,101 +68,151 @@ def check_availability() -> dict:
                     except Exception:
                         pass
 
-            # 4. Tag 1 klicken
+            # ── 4. Tag 1 klicken via JavaScript ────────────────────
             log("Klicke Tag 1 ...")
-            clicked = click_day_1(page)
-            if not clicked:
-                log("WARNUNG: Tag 1 konnte nicht geklickt werden!")
+            clicked = page.evaluate("""
+                () => {
+                    const cells = document.querySelectorAll('td, [class*="day"], button');
+                    for (const cell of cells) {
+                        const txt = (cell.textContent || '').trim();
+                        const cls = (cell.className || '').toLowerCase();
+                        if (txt === '1'
+                            && !cls.includes('disabled')
+                            && !cls.includes('prev')
+                            && !cls.includes('other')
+                            && !cls.includes('grayed')) {
+                            cell.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            log(f"Tag 1 geklickt: {clicked}")
 
-            # 5. Warten — Popup braucht Zeit
-            log("Warte 6 Sekunden ...")
+            # ── 5. Warten und Popup prüfen ──────────────────────────
+            log("Warte 6 Sekunden auf Seitenantwort ...")
             page.wait_for_timeout(6000)
 
-            # 6. Debug-Info sammeln
-            log("Sammle Debug-Infos von der Seite ...")
-            debug = get_page_debug_info(page)
-            debug_html = debug.get("html_raw", "")[:8000]
+            page.screenshot(path="/tmp/step1_after_day_click.png")
 
-            log(f"HTML-Laenge: {debug.get('html_length', 0)} Zeichen")
-            log(f"Body-Text (erste 500 Zeichen): {debug.get('body_text','')[:500]}")
-
-            # Screenshot
-            page.screenshot(path="/tmp/akropolis_screenshot.png")
-
-            # 7. Prüfung
-            not_avail, reason = is_not_available(debug)
-
-            if not_avail:
+            if has_error_popup(page):
                 browser.close()
                 return {
                     "available": False,
                     "reason": "Datum noch nicht buchbar (Website: 'not available for this specific selection').",
                     "url": BOOKING_URL,
-                    "debug_html": debug_html,
                 }
 
-            # 8. Continue & Slots
-            log("Kein Fehler-Modal. Pruefe Zeitslots ...")
-            try:
-                page.click("text=Continue", timeout=5000)
-                page.wait_for_timeout(3000)
-            except Exception:
-                pass
+            # ── 6. Zeitslot 8:00 klicken ───────────────────────────
+            # Wir klicken AKTIV den 8:00-Slot an — nur wenn er wirklich
+            # auswählbar ist kann man darauf klicken
+            log("Versuche Zeitslot 8:00 zu klicken ...")
+            slot_clicked = page.evaluate("""
+                () => {
+                    const items = document.querySelectorAll('li, [class*="slot"], [class*="time"]');
+                    for (const el of items) {
+                        const txt = (el.textContent || '').trim();
+                        const cls = (el.className || '').toLowerCase();
+                        if ((txt.includes('8:00') || txt.includes('08:00'))
+                            && !cls.includes('disabled')
+                            && !cls.includes('sold')
+                            && !cls.includes('full')) {
+                            el.click();
+                            return 'geklickt: ' + txt;
+                        }
+                    }
+                    return null;
+                }
+            """)
+            log(f"Slot-Klick Ergebnis: {slot_clicked}")
 
-            # Nochmals nach Popup prüfen
-            debug2 = get_page_debug_info(page)
-            not_avail2, _ = is_not_available(debug2)
-            if not_avail2:
+            page.wait_for_timeout(3000)
+
+            # Popup nach Slot-Klick prüfen
+            if has_error_popup(page):
                 browser.close()
                 return {
                     "available": False,
-                    "reason": "Nach Continue: Datum noch nicht buchbar.",
+                    "reason": "Datum noch nicht buchbar (nach Slot-Auswahl).",
                     "url": BOOKING_URL,
-                    "debug_html": debug2.get("html_raw","")[:8000],
                 }
 
-            # Zeitslots lesen
-            slot_available = False
-            slot_found     = False
-            for el in page.locator("li, [class*='slot'], [class*='time']").all():
-                try:
-                    txt = el.inner_text(timeout=500).strip()
-                    cls = (el.get_attribute("class") or "").lower()
-                    if "8:00" in txt or "08:00" in txt:
-                        slot_found = True
-                        disabled   = any(w in cls for w in ["disabled","sold","unavail","full"])
-                        log(f"8:00-Slot: '{txt}' disabled={disabled}")
-                        if not disabled:
-                            slot_available = True
-                        break
-                except Exception:
-                    pass
+            # ── 7. Continue klicken ─────────────────────────────────
+            log("Klicke Continue ...")
+            try:
+                page.click("text=Continue", timeout=5000)
+                page.wait_for_timeout(4000)
+            except Exception:
+                log("Kein Continue-Button gefunden.")
+
+            page.screenshot(path="/tmp/step2_after_continue.png")
+
+            # Popup nach Continue prüfen
+            if has_error_popup(page):
+                browser.close()
+                return {
+                    "available": False,
+                    "reason": "Datum noch nicht buchbar (nach Continue).",
+                    "url": BOOKING_URL,
+                }
+
+            # ── 8. Prüfe ob wir die Ticket-MENGENAUSWAHL erreicht haben ──
+            # Das ist der EINZIGE verlässliche Beweis für echte Verfügbarkeit:
+            # Auf der Mengenauswahlseite gibt es ein "Add to Basket" oder
+            # Zahlen-Eingabefelder für Tickets.
+            log("Prüfe ob Mengenauswahl erreichbar ist ...")
+
+            visible_text = page.evaluate("() => document.body.innerText").lower()
+            log(f"Seitentext nach Continue (300 Zeichen): {visible_text[:300]}")
+
+            page.screenshot(path="/tmp/step3_ticket_select.png")
+
+            # Prüfe auf Mengenauswahl-Elemente
+            reached_quantity = page.evaluate("""
+                () => {
+                    const text = document.body.innerText.toLowerCase();
+                    // "Add to Basket" oder "Choose your tickets" = Mengenauswahl erreicht
+                    return text.includes('add to basket')
+                        || text.includes('choose your tickets')
+                        || text.includes('single ticket')
+                        || document.querySelector('input[type="number"]') !== null
+                        || document.querySelector('[class*="quantity"]') !== null
+                        || document.querySelector('[class*="ticket-count"]') !== null;
+                }
+            """)
+
+            if has_error_popup(page):
+                browser.close()
+                return {
+                    "available": False,
+                    "reason": "Datum noch nicht buchbar.",
+                    "url": BOOKING_URL,
+                }
 
             browser.close()
 
-            if slot_available:
-                return {"available": True,  "reason": "Zeitslot 8:00 Uhr am 1. April 2026 ist BUCHBAR!", "url": BOOKING_URL}
-            elif slot_found:
-                return {"available": False, "reason": "Zeitslot 8:00 ausgebucht.", "url": BOOKING_URL}
+            if reached_quantity:
+                return {
+                    "available": True,
+                    "reason": "Buchungsflow erfolgreich durchlaufen — Ticketauswahl erreichbar!",
+                    "url": BOOKING_URL,
+                }
             else:
                 return {
                     "available": False,
-                    "reason": "Datum noch nicht buchbar (keine Slots gefunden).",
+                    "reason": "Datum noch nicht buchbar (Mengenauswahl nicht erreichbar).",
                     "url": BOOKING_URL,
-                    "debug_html": debug2.get("html_raw","")[:8000],
                 }
 
         except Exception as e:
             log(f"Fehler: {e}")
             import traceback; traceback.print_exc()
-            try:
-                page.screenshot(path="/tmp/akropolis_error.png")
-                debug_e = get_page_debug_info(page)
-                debug_html = debug_e.get("html_raw","")[:8000]
-            except Exception:
-                pass
-            browser.close()
-            return {"available": False, "reason": f"Fehler: {str(e)[:200]}", "url": BOOKING_URL, "debug_html": debug_html}
+            try: page.screenshot(path="/tmp/akropolis_error.png")
+            except Exception: pass
+            try: browser.close()
+            except Exception: pass
+            return {"available": False, "reason": f"Fehler: {str(e)[:200]}", "url": BOOKING_URL}
 
 
 def send_email(subject: str, body: str):
@@ -249,7 +222,7 @@ def send_email(subject: str, body: str):
     msg["Subject"] = subject
     msg["From"]    = sender
     msg["To"]      = ALERT_EMAIL
-    log(f"Sende '{subject}' ...")
+    log(f"Sende '{subject}' an {ALERT_EMAIL} ...")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, app_password)
         smtp.send_message(msg)
@@ -259,7 +232,6 @@ def send_email(subject: str, body: str):
 def build_body(result: dict, available: bool) -> str:
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     url = result.get("url") or BOOKING_URL
-
     if available:
         return (
             f"ALARM: Akropolis-Tickets JETZT verfuegbar!\n\n"
@@ -267,10 +239,11 @@ def build_body(result: dict, available: bool) -> str:
             f"Uhrzeit:  08:00 Uhr\n"
             f"Personen: {ADULTS} Erwachsene + {CHILDREN} Kinder\n\n"
             f">>> Jetzt sofort buchen: {url}\n\n"
-            f"Geprueft: {now}"
+            f"Info: {result.get('reason','')}\n\n"
+            f"Nicht zu lange warten!\n\nGeprueft: {now}"
         )
     else:
-        body = (
+        return (
             f"Akropolis Ticket Monitor - Statusbericht\n\n"
             f"Datum:    {TARGET_DATE_DISPLAY}\n"
             f"Uhrzeit:  08:00 Uhr\n"
@@ -281,11 +254,6 @@ def build_body(result: dict, available: bool) -> str:
             f"Naechste Pruefungen: 09:00 / 12:00 / 15:00 Uhr\n\n"
             f"Geprueft: {now}"
         )
-        # Debug-HTML anhängen damit wir sehen was die Seite wirklich zeigt
-        if DEBUG and result.get("debug_html"):
-            body += f"\n\n{'='*40}\nDEBUG HTML-AUSZUG (erste 3000 Zeichen):\n{'='*40}\n"
-            body += result["debug_html"][:3000]
-        return body
 
 
 def main():
