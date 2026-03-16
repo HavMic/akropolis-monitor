@@ -11,8 +11,6 @@ jobs:
   check-tickets:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Repository auschecken
@@ -28,7 +26,8 @@ jobs:
 
       - name: Ticket-Verfuegbarkeit pruefen
         env:
-          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
-          GMAIL_SENDER:        ${{ secrets.GMAIL_SENDER }}
-          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+          ANTHROPIC_API_KEY:                    ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_SENDER:                         ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD:                   ${{ secrets.GMAIL_APP_PASSWORD }}
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:   true
         run: python monitor.py
